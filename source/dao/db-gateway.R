@@ -5,40 +5,6 @@
 #
 #
 
-#Create a new user in database/ Logon
-createNewUser <- function(username, password) {
-  dt <- data.table(username = username, password = password)
-  conn <- mongo(collection = "user", url = mongo_db("sys"))
-  
-  tryCatch({
-    conn$insert(dt)
-  }, finally = {
-    rm(conn)
-  })
-  
-  return()
-}
-
-#Credentials authentication/ Login
-authenticateUser <- function(username, password) {
-  jsonQry <- '{}'
-  jsonFld <- '{"password":1}'
-  jsonQry <- paste0("{\"username\":\"", username, "\"}")
-  conn <- mongo(collection = "user", url = mongo_db("sys"))
-  
-  tryCatch({
-    dt <- data.table(conn$find(query = jsonQry, fields = jsonFld))
-    if (!(nrow(dt) && password_verify(dt$password, password))) {
-      statusCode <- 401
-      stop()
-    }
-    statusCode <- 200
-  }, finally = {
-    rm(conn)
-    return(statusCode)
-  })
-}
-
 #Get the user id from database
 getUserID <- function(username) {
   jsonQry <- '{}'
@@ -267,14 +233,19 @@ uploadIRData <- function(vecDocs) {
 #Upload IR Sub-Collection results to database
 uploadIRResult <- function(irResultObj) {
   conn <- mongo(collection = "subcoll", url = mongo_db("app"))
-  tryCatch({
+  resp <- tryCatch({
     conn$insert(irResultObj)
+    TRUE
     #log_info("The search results have been successfully uploaded.\n")
   }, error = function(e) {
     log_error("Following error occurred while uploading IR results to the database: {e}")
+    stop(e)
+  }, warning = function(w) {
+    log_info(paste("Warning while while uploading IR results to the database: {w}")) 
   }, finally = {
     rm(conn)
   })
+  return(resp)
 }
 
 #Get domain information
@@ -297,50 +268,6 @@ getDomainInfo <- function() {
 
   return(lst$domain_name)
 }
-
-# #Get domain information
-# getDomainInfo <- function(mining_opts) {
-#   jsonQry <- '{}'
-#   if (mining_opts)
-#     jsonFld <- '{"_id":1, "domain_name":1, "mining_opts":1}'
-#   else
-#     jsonFld <- '{"_id":1, "domain_name":1, "mining_opts":0}'
-#   conn <- mongo(collection = "domain", url = mongo_db("app"))
-#   tryCatch({
-#     lst <- conn$find(query = jsonQry, field = jsonFld)
-#     log_info("The domain info has been successfully retrieved\n")
-#   }, error = function(e) {
-#     log_error("Following error occurred while retrieving domain info from the database: {e}")
-#   }, finally = {
-#     rm(conn)
-#   })
-#   
-#   if (length(lst) == 0) {
-#     log_info("No domain info data found")
-#   } else {
-#     if (mining_opts)
-#       names(lst) <- c("_id", "domain_name", "mining_opts")
-#     else
-#       names(lst) <- c("_id", "domain_name")
-#   }
-#   return(lst)
-# }
-# 
-# #Create domain information
-# CreateDomainInfo <- function(domain_name, mining_opts) {
-#   lst <- list("_id"=gsub(" ", "_", domain_name), "domain_name"=domain_name, "mining_opts"=mining_opts)
-#   doc <- toJSON(lst, auto_unbox = TRUE)
-#   conn <- mongo(collection = "domain", url = mongo_db("app"))
-#   tryCatch({
-#     conn$insert(doc)
-#     log_info("A domain {domain_name} info has been successfully created.\n")
-#   }, error = function(e) {
-#     log_error("Following error occurred while uploading domain info to the database: {e}")
-#   }, finally = {
-#     rm(conn)
-#   })
-# }
-
 
 #Create domain information
 createDomainInfo <- function(domain_name) {
@@ -403,7 +330,11 @@ uploadAPIKeys <- function(apiKeyObj) {
   jsonWhere <- paste0("{\"user_id\":", "\"", lst$user_id, "\"}")
   jsonSet <- paste0("{\"$set\":{\"elsevier_api_key\":", "\"", lst$elsevier_api_key, "\",", 
                     "\"springer_api_key\":", "\"", lst$springer_api_key, "\",", 
-                    "\"wiley_api_key\":", "\"", lst$wiley_api_key, "\" }}")
+                    "\"wiley_api_key\":", "\"", lst$wiley_api_key, "\",",
+                    "\"azure_openai_api_key\":", "\"", lst$azure_openai_api_key, "\",",
+                    "\"azure_openai_api_endpoint\":", "\"", lst$azure_openai_api_endpoint, "\",",
+                    "\"azure_openai_api_version\":", "\"", lst$azure_openai_api_version, "\",",
+                    "\"blablador_api_key\":", "\"", lst$blablador_api_key, "\"}}")
   conn <- mongo(collection = "api_key", url = mongo_db("app"))
   tryCatch({
     conn$update(jsonWhere, jsonSet, upsert = TRUE)
@@ -549,6 +480,66 @@ getDOINorm <- function(doi) {
   return(doi_norm)
 }
 
+#Get doi_norm
+getDOIsNorm <- function(dois) {
+  if (!is.null(dois)) {
+    dois <- paste(shQuote(dois, type="cmd"), collapse=", ")
+    jsonQry <- paste0("{\"_id\": {\"$in\": [", dois, "]}}")
+  }
+  jsonFld <- '{"_id":0, "doi_norm":1}'
+  conn <- mongo(collection = "collect", url = mongo_db("app"))
+  tryCatch({
+    out <- conn$find(query = jsonQry, field = jsonFld)
+  }, error = function(e) {
+    log_error("Following error occurred while retrieving doi norm from the database: {e}")
+  }, finally = {
+    rm(conn)
+  })
+  if (length(out) == 0) {
+    log_info("No doi norm found")
+    doi_norm <- character()
+  } else {
+    doi_norm <- out$doi_norm
+  }
+  return(doi_norm)
+}
+
+#Get doi_norm
+getDOIs <- function(dois_norm) {
+  if (is.null(dois_norm) || length(dois_norm) == 0) return(character())
+  
+  # Prepare query for input dois_norm
+  dois_quoted <- paste(shQuote(dois_norm, type = "cmd"), collapse = ", ")
+  jsonQry <- paste0('{"doi_norm": {"$in": [', dois_quoted, ']}}')
+  
+  # Fetch both _id and doi_norm from MongoDB for mapping
+  jsonFld <- '{"_id":1, "doi_norm":1}'
+  
+  conn <- mongo(collection = "collect", url = mongo_db("app"))
+  out <- tryCatch({
+    conn$find(query = jsonQry, fields = jsonFld)
+  }, error = function(e) {
+    log_error("Error retrieving doi_norm: {e}")
+    data.frame()
+  }, finally = {
+    rm(conn)
+  })
+  
+  if (nrow(out) == 0) {
+    log_info("No doi norm found")
+    return(character())
+  }
+  
+  # Create named vector: names = doi_norm, values = _id
+  matched <- setNames(as.character(out$`_id`), out$doi_norm)
+  
+  # Return _id values in order of input dois_norm; missing ones will be NA
+  result <- matched[dois_norm]
+  
+  return(result)
+}
+
+
 
 getSynQuery <- function(domain_name = NULL) {
   if (is.null(domain_name)) {
@@ -639,7 +630,7 @@ getSynonyms <- function(domain_name = NULL) {
   if (is.null(domain_name))
     return("")
   query <- getSynQuery(domain_name)
-  conn <- mongo(collection = "synonym_test", url = mongo_db("app"))
+  conn <- mongo(collection = "synonym", url = mongo_db("app"))
   tryCatch({
     dt <- conn$aggregate(query)
   }, finally = {
@@ -773,81 +764,125 @@ saveSynonyms <- function(synObj) {
 }
 
 
+# Get fulltext
+
+#Get IR collection from database
+getFulltext <- function(dois = NULL) {
+  jsonQry <- "{}"
+  jsonFld <- '{"_id":0, "body":1}'
+  
+  if (!is.null(dois)) {
+    dois <- paste(shQuote(dois, type="cmd"), collapse=", ")
+    jsonQry <- paste0("{\"_id\": {\"$in\": [", dois, "]}}")
+  }
+  conn <- mongo(collection = "index", url = mongo_db("app"))
+  tryCatch({
+    lst <- conn$find(query = jsonQry, fields = jsonFld) %>%
+      apply(1, function(x) list(x)) %>%
+      unlist(recursive = F, use.names = F)
+  }, warning = function(w) {
+    message(paste("Warning while data fetching:", w, sep = "\n")) 
+  }, finally = {
+    rm(conn)
+  })
+  if (length(lst) == 0)
+    log_info("No IR data found")
+  return(unlist(lst))
+}
+
+#Get IR collection from database
+getODEDataset <- function(sub_coll = NULL) {
+  if (is.null(sub_coll))
+    return(NULL)
+  
+  jsonQry <- paste0("{\"_id\":\"", sub_coll, "\"}")
+  jsonFld <- '{"dois.doi": 1, "_id": 0}'
+
+  conn <- mongo(collection = "subcoll", url = mongo_db("app"))
+  tryCatch({
+    dois <- conn$find(query = jsonQry, fields = jsonFld)
+    dois <- unlist(dois$dois, use.names = F)
+    rm(conn)
+    
+    if (!is.null(dois)) {
+      dois <- paste(shQuote(dois, type="cmd"), collapse=", ")
+      jsonQry <- paste0("{\"_id\": {\"$in\": [", dois, "]}}")
+    }
+    jsonFld <- '{"_id":1, "title":1}'
+    conn <- mongo(collection = "collect", url = mongo_db("app"))
+    dt <- conn$find(query = jsonQry, fields = jsonFld)
+  }, warning = function(w) {
+    message(paste("Warning while data fetching:", w, sep = "\n")) 
+  }, finally = {
+    rm(conn)
+  })
+  if (nrow(dt) == 0)
+    log_info("No data found")
+  setnames(dt, "_id", "doi")
+  return(dt)
+}
 
 
+# function to get relevant sentences against the user query
+getRelevantSentences <- function(query, ir_subcoll, sentence_model, sentence_per_passage, rel_passages, sentence_similarity_threshold, adj_sentences, lstSentenceModel) {
+  documents <- getSentenceEmbeddings(subcoll_name=ir_subcoll, sentence_model=sentence_model, sentence_per_passage=sentence_per_passage)
+  if (!nrow(documents))
+    return(NULL)
+  sentence_model <- get(sentence_model, lstSentenceModel)
+  relevant_sentences <- extract_relevant_sentences(documents=documents, 
+                                                   query=query, 
+                                                   sentence_model=sentence_model,
+                                                   sentence_per_passage=as.double(sentence_per_passage),
+                                                   top_k=as.double(rel_passages),
+                                                   similarity_threshold=sentence_similarity_threshold,
+                                                   adjacent=as.double(adj_sentences),
+                                                   num_workers=Sys.getenv("NUM_OF_WORKERS"))
+  return(relevant_sentences)
+}
 
+#Get data extraction schema names
+getDESchemaNames <- function() {
+  jsonQry <- '{}'
+  jsonFld <- '{"_id":0, "schema_names":1}'
+  conn <- mongo(collection = "de_schema_names", url = mongo_db("app"))
+  tryCatch({
+    dt <- conn$find(query = jsonQry, field = jsonFld)
+  }, error = function(e) {
+    log_error("Following error occurred while retrieving data extraction schema names from the database: {e}")
+  }, finally = {
+    rm(conn)
+  })
+  
+  if (is.null(dt$schema_names)) {
+    log_info("No data extraction schema names found")
+    return()
+  }
+  
+  return(dt$schema_names[[1]])
+}
 
+#Save data extraction schema name
+saveDESchemaName <- function(de_schema_name) {
+  if (missing(de_schema_name) || de_schema_name == "") {
+    log_error("Invalid schema name provided for saving.")
+    return(FALSE)
+  }
+  
+  conn <- mongo(collection = "de_schema_names", url = mongo_db("app"))
+  tryCatch({
+    conn$update(
+      query = '{}',
+      update = sprintf('{"$addToSet": {"schema_names": "%s"}}', de_schema_name),
+      upsert = TRUE
+    )
+    
+    log_info("Successfully saved schema name: {de_schema_name}")
+    return(TRUE)
+  }, error = function(e) {
+    log_error("Error saving data extraction schema name: {e}")
+    return(FALSE)
+  }, finally = {
+    rm(conn)
+  })
+}
 
-# 
-# domain_name <- "materials science"
-# mining_opts <- list("qty", "pltdgtz", "tbl", "matcomp", "miscner")
-
-
-# Acronyms for mining options for materials science domain
-
-# qty      - quantities from text
-# pltdgtz  - plot digitization
-# tbl      - table
-# matcomp  - material composition
-# miscner  - mics named entity recognition from text
-
-# 
-# 
-# 
-# 
-# 
-# 
-# getUUID <- function(api) {
-#   CONN <- connectDB()
-#   qry <- paste0("SELECT [UUID] FROM ", TABLE_API,
-#                 " WHERE ", "[API] = '", api, "'")
-#   res <- dbSendQuery(CONN, qry)
-#   dt <- dbFetch(res)
-#   dbClearResult(res)
-#   disconnectDB(CONN)
-#   dt <- data.table(dt)
-#   return(dt)
-# }
-# 
-# getSearchUUIDs <- function() {
-# 
-# }
-# 
-# getRawData <- function() {
-#   
-# }
-# 
-# getKDData <- function() {
-#   
-# }
-# 
-# getAnalysisData <- function() {
-#   
-# }
-# 
-# getModel <- function() {
-#   
-# }
-# 
-# uploadRawData <- function(dt) {
-#   if (nrow(dt) > 0){
-#     CONN <- connectDB()
-#     dbWriteTable(CONN, TABLE_RAWDATA, dt)
-#     disconnectDB(CONN)
-#   } else {
-#     cat("Data object is empty and thefore nothing can be uploaded.")
-#   }
-# }
-# 
-# uploadKDData <- function() {
-#   
-# }
-# 
-# uploadAnalysisData <- function() {
-#   
-# }
-# 
-# uploadModel <- function() {
-#   
-# }
-# 

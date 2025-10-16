@@ -129,7 +129,7 @@ def getQuery(qryObj):
     return qry
 
 
-def getResults(resp):
+def getLexicalResults(resp):
     res = []
     hits = resp.hits
     if len(hits) == 0:
@@ -154,9 +154,33 @@ def getResults(resp):
             res.append(doc_dict)
         resObj = json.dumps(res)
     return resObj
+  
+def getSemanticResults(resp):
+    res = []
+    hits = resp.hits
+    if len(hits) == 0:
+        return json.dumps({})
+    else:
+        for hit in hits:
+            doc_dict = collections.defaultdict(list)
+            doc_dict = {
+                "_id": hit.meta.id,
+                "score": hit.meta.score,
+                "title": hit.title,
+                "abstract": hit.abstract,
+                "captions": []
+            }
+            for caption in hit.captions:
+                path = caption.path if "path" in caption else "null"
+                doc_dict["captions"].append({
+                    "path": path,
+                    "caption": caption.description
+                })
+            res.append(doc_dict)
+        resObj = json.dumps(res)
+    return resObj
 
-
-def searchEngine(qryObj, configObj):
+def searchEngine(qryObj, configObj, search_service):
     conn_str = [
                  {
                    "scheme": configObj["scheme"], 
@@ -172,11 +196,20 @@ def searchEngine(qryObj, configObj):
       client = Elasticsearch(conn_str,
                             basic_auth=(configObj["username"], configObj["password"]))
           
-    qry = getQuery(qryObj)
-    s = Search(using=client, index=configObj["index_name"]).query(qry).extra(size=10000)
-    resp = s.execute()
-    resObj = getResults(resp)
+    if search_service == "lexical":
+      qry = getQuery(qryObj)
+      s = Search(using=client, index="ir.index").query(qry).extra(size=10000)
+      resp = s.execute()
+      resObj = getLexicalResults(resp)
+    else:
+      qry = qryObj
+      s = Search(using=client, index=configObj["index_name"]).extra(size=10000)
+      s = s.knn(field='embeddings', k=100, num_candidates=300, query_vector=qryObj, similarity=float(configObj["similarity_threshold"]))
+      s = s.source(["_id", "title", "abstract", "captions"])
+      resp = s.execute()
+      resObj = getSemanticResults(resp)
     return resObj
   
   #[{"host": configObj["host"], "port": configObj["port"], "scheme": configObj["scheme"]}]
   #configObj["scheme"] + "://" + configObj["host"] + ":" + configObj["port"]
+  #configObj["similarity_threshold"]

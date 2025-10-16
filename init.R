@@ -7,6 +7,11 @@ library(reticulate)
 library(plumber)
 library(future)
 library(promises)
+library(httr)
+
+#install.packages("rdflib)
+
+options(digits = 22)
 
 # Set logger path
 log_appender(appender_file(Sys.getenv("LOG_PATH")))
@@ -33,7 +38,7 @@ sourceFolder <- function(dirPath) {
 
 # Function to source python folders
 sourcePyFolder <- function(dirPath) {
-  reticulate::use_miniconda(Sys.getenv("PY_ENV"), required = TRUE)
+  reticulate::use_condaenv(Sys.getenv("PY_ENV"), required = TRUE)
   if (!dir.exists(dirPath)) {
     logger::log_info(paste0("Directory '", dirPath, "' does not exist. Skipping...\n"))
   } else {
@@ -53,9 +58,13 @@ sourcePyFolder <- function(dirPath) {
 
 # Source all folders
 sourceFolder("source/dao")
+sourceFolder("source/embed")
 
 # Source python folder
 sourcePyFolder("source/python")
 
+future::plan(multicore, workers = future::availableCores()[[1]])
+
 # REST Endpoint call up
 pr("rest_controller.R") %>% pr_run(host = "0.0.0.0", port = 9009)
+

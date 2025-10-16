@@ -16,7 +16,7 @@ mongo_db <- function(db_name = NULL) {
                    Sys.getenv("MONGO_PORT"),
                    "/",
                    "app",
-                   "?authSource=admin")
+                   "?authSource=admin&readPreference=primary")
   } else {
     conn <- paste0("mongodb://",
                    Sys.getenv("MONGO_USR"),
@@ -29,7 +29,7 @@ mongo_db <- function(db_name = NULL) {
                    Sys.getenv("MONGO_PORT"),
                    "/",
                    db_name,
-                   "?authSource=admin")
+                   "?authSource=admin&readPreference=primary")
   }
   return(conn)
 }
